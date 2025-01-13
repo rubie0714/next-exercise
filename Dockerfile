@@ -1,66 +1,45 @@
-# syntax=docker.io/docker/dockerfile:1
+# 1. 使用官方 Node.js 映像檔作為基礎映像 (建置階段)
+FROM node:18-alpine AS builder
 
-FROM node:18-alpine AS base
-
-# Install dependencies only when needed
-FROM base AS deps
-# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
-RUN apk add --no-cache libc6-compat
+# 2. 設定工作目錄
 WORKDIR /app
 
-# Install dependencies based on the preferred package manager
-COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* .npmrc* ./
-RUN \
-    if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
-    elif [ -f package-lock.json ]; then npm ci; \
-    elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
-    else echo "Lockfile not found." && exit 1; \
-    fi
+# 3. 複製 package.json 和 package-lock.json / yarn.lock
+COPY package*.json ./
+# 如果使用的是 Yarn，可以改成：
+# COPY yarn.lock ./
 
+# 4. 安裝依賴 (為了更小的映像檔建議安裝生產依賴)
+RUN npm install
 
-# Rebuild the source code only when needed
-FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+# 5. 複製專案所有檔案
 COPY . .
 
-# Next.js collects completely anonymous telemetry data about general usage.
-# Learn more here: https://nextjs.org/telemetry
-# Uncomment the following line in case you want to disable telemetry during the build.
-# ENV NEXT_TELEMETRY_DISABLED=1
+# 6. 建置 Next.js 專案
+RUN npm run build
 
-RUN \
-    if [ -f yarn.lock ]; then yarn run build; \
-    elif [ -f package-lock.json ]; then npm run build; \
-    elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm run build; \
-    else echo "Lockfile not found." && exit 1; \
-    fi
+# 7. 使用更輕量的 Node.js 映像檔 (運行階段)
+FROM node:18-alpine AS runner
 
-# Production image, copy all the files and run next
-FROM base AS runner
+# 8. 設定環境變數 (可選)
+ENV NODE_ENV=production
+
+# 9. 設定工作目錄
 WORKDIR /app
 
-ENV NODE_ENV=production
-# Uncomment the following line in case you want to disable telemetry during runtime.
-# ENV NEXT_TELEMETRY_DISABLED=1
+# 10. 安裝 PM2 (可選，提升生產環境管理)
+RUN npm install -g pm2
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-
+# 11. 複製必要檔案到運行階段映像
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 
-# Automatically leverage output traces to reduce image size
-# https://nextjs.org/docs/advanced-features/output-file-tracing
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-USER nextjs
-
+# 12. 開放 3000 port
 EXPOSE 3000
 
-ENV PORT=3000
-
-# server.js is created by next build from the standalone output
-# https://nextjs.org/docs/pages/api-reference/config/next-config-js/output
-ENV HOSTNAME="0.0.0.0"
-CMD ["node", "server.js"]
+# 13. 啟動 Next.js (使用 PM2 或直接啟動)
+CMD ["npm", "start"]
+# 或者使用 PM2：
+# CMD ["pm2-runtime", "start", "npm", "--", "start"]
